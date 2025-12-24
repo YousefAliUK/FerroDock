@@ -15,6 +15,105 @@ pub struct DockIcon {
     pub hicon: HICON,
 }
 
+pub fn is_dock_worthy_window(hwnd: HWND) -> bool {
+    unsafe {
+        if !IsWindowVisible(hwnd).as_bool() {
+            return false;
+        }
+
+        if GetWindowTextLengthW(hwnd) == 0 {
+            return false;
+        }
+
+        if GetWindow(hwnd, GW_OWNER).0 != 0 {
+            return false;
+        }
+
+        let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+        if (style & WS_EX_TOOLWINDOW.0) != 0 {
+            return false;
+        }
+
+        let mut is_cloacked: u32 = 0;
+        if DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAKED,
+            &mut is_cloacked as *mut _ as *mut _,
+            std::mem::size_of::<u32>() as u32,
+        )
+        .is_ok()
+            && is_cloacked != 0
+        {
+            return false;
+        }
+
+        true
+    }
+}
+
+pub fn get_dock_icon_for_window(hwnd: HWND) -> Option<DockIcon> {
+    if !is_dock_worthy_window(hwnd) {
+        return None;
+    }
+
+    let mut process_id: u32 = 0;
+    unsafe {
+        let _ = GetWindowThreadProcessId(hwnd, Some(&mut process_id));
+    }
+
+    if process_id == 0 {
+        return None;
+    }
+
+    let process_handle = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
+            false,
+            process_id,
+        )
+    };
+
+    let Ok(handle) = process_handle else {
+        return None;
+    };
+
+    let mut path_buf: [u16; 260] = [0; 260];
+    let len = unsafe { GetModuleFileNameExW(handle, HMODULE(0), &mut path_buf) };
+
+    let _ = unsafe { CloseHandle(handle) };
+
+    if len == 0 {
+        return None;
+    }
+
+    let path_str = String::from_utf16_lossy(&path_buf[..len as usize]);
+
+    let app_own_path = std::env::current_exe().ok()?.to_string_lossy().to_string();
+
+    if path_str == app_own_path {
+        return None;
+    }
+
+    let hicon = unsafe {
+        let result = SendMessageW(hwnd, WM_GETICON, WPARAM(ICON_BIG as usize), LPARAM(0));
+
+        if result.0 == 0 {
+            HICON(GetClassLongPtrW(hwnd, GCLP_HICON) as isize)
+        } else {
+            HICON(result.0)
+        }
+    };
+
+    if hicon.is_invalid() {
+        return None;
+    }
+
+    Some(DockIcon {
+        hicon,
+        path: path_str,
+    })
+}
+
 pub fn update_running_apps() -> Vec<DockIcon> {
     let mut open_windows: Vec<HWND> = Vec::new();
     unsafe {

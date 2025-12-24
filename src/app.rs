@@ -1,16 +1,20 @@
 use eframe::{self, App, Frame, egui};
 use egui::{Context, TextureHandle};
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::sync::mpsc::Receiver;
 
 use crate::config::Config;
+use crate::events::{self, WindowEvent};
 use crate::win_api::{self, DockIcon};
+
+use windows::Win32::Foundation::HWND;
 
 pub struct FerroDock {
     pub config: Config,
     pub dock_items: Vec<DockIcon>,
     pub icon_textures: HashMap<String, TextureHandle>,
-    pub last_update: Instant,
+    event_receiver: Receiver<WindowEvent>,
+    needs_refresh: bool,
 }
 
 impl Default for FerroDock {
@@ -19,12 +23,81 @@ impl Default for FerroDock {
             config: Config::default(),
             dock_items: Vec::new(),
             icon_textures: HashMap::new(),
-            last_update: Instant::now() - Duration::from_secs(10),
+            event_receiver: events::start_event_listener(),
+            needs_refresh: false,
         }
     }
 }
 
 impl FerroDock {
+    pub fn new() -> Self {
+        let initial_icons = win_api::update_running_apps();
+
+        let event_receiver = events::start_event_listener();
+
+        Self {
+            config: Config::default(),
+            dock_items: initial_icons,
+            icon_textures: HashMap::new(),
+            event_receiver,
+            needs_refresh: false,
+        }
+    }
+
+    fn process_window_events(&mut self) {
+        while let Ok(event) = self.event_receiver.try_recv() {
+            match event {
+                WindowEvent::WindowCreated(hwnd_raw) | WindowEvent::WindowShown(hwnd_raw) => {
+                    let hwnd = HWND(hwnd_raw as isize);
+
+                    match win_api::get_dock_icon_for_window(hwnd) {
+                        Some(icon) => {
+                            if !self.dock_items.iter().any(|i| i.path == icon.path) {
+                                println!("✅ Adding: {}", icon.path);
+                                self.dock_items.push(icon);
+                            } else {
+                                println!("⏭️ Already exists: {}", icon.path);
+                            }
+                        }
+                        None => {
+                            println!("⏭️ Not a dockable window");
+                        }
+                    }
+                }
+
+                WindowEvent::WindowDestroyed(_hwnd_raw) => {
+                    self.needs_refresh = true;
+                }
+
+                WindowEvent::WindowHidden(_hwnd_raw) => {
+                    println!("👁️ Window hidden/Shown");
+                }
+            }
+        }
+
+        if self.needs_refresh {
+            println!("🔄 Refreshing dock...");
+
+            let currently_running = win_api::update_running_apps();
+            let running_paths: std::collections::HashSet<_> =
+                currently_running.iter().map(|i| i.path.clone()).collect();
+
+            self.dock_items.retain(|item| {
+                let keep = running_paths.contains(&item.path);
+                if !keep {
+                    println!("🗑️ Removed: {}", item.path);
+                }
+                keep
+            });
+
+            let current_paths: std::collections::HashSet<_> =
+                self.dock_items.iter().map(|i| i.path.clone()).collect();
+            self.icon_textures
+                .retain(|path, _| current_paths.contains(path));
+
+            self.needs_refresh = false;
+        }
+    }
     fn draw_dock_ui(&self, ui: &mut egui::Ui) {
         let Config {
             background_color,
@@ -66,10 +139,7 @@ impl FerroDock {
 
 impl App for FerroDock {
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
-        if self.last_update.elapsed() > Duration::from_secs(2) {
-            self.dock_items = win_api::update_running_apps();
-            self.last_update = Instant::now();
-        }
+        self.process_window_events();
 
         for icon in &self.dock_items {
             if !self.icon_textures.contains_key(&icon.path) {

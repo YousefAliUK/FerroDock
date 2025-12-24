@@ -2,13 +2,12 @@ use eframe::egui::{self};
 use eframe::{self};
 
 // Module(s)
-mod config;
-
 mod app;
-use app::*;
-
+mod config;
+mod events;
 mod win_api;
 
+use app::*;
 // Main application structure
 fn main() {
     let options = eframe::NativeOptions {
@@ -21,6 +20,6 @@ fn main() {
     let _ = eframe::run_native(
         "FerroDock",
         options,
-        Box::new(|_cc| Box::new(FerroDock::default())),
+        Box::new(|_cc| Box::new(FerroDock::new())),
     );
 }
