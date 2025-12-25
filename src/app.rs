@@ -14,7 +14,6 @@ pub struct FerroDock {
     pub dock_items: Vec<DockIcon>,
     pub icon_textures: HashMap<String, TextureHandle>,
     event_receiver: Receiver<WindowEvent>,
-    needs_refresh: bool,
 }
 
 impl Default for FerroDock {
@@ -24,7 +23,6 @@ impl Default for FerroDock {
             dock_items: Vec::new(),
             icon_textures: HashMap::new(),
             event_receiver: events::start_event_listener(),
-            needs_refresh: false,
         }
     }
 }
@@ -40,64 +38,70 @@ impl FerroDock {
             dock_items: initial_icons,
             icon_textures: HashMap::new(),
             event_receiver,
-            needs_refresh: false,
         }
     }
 
-    fn process_window_events(&mut self) {
+    fn process_window_events(&mut self) -> bool {
+        let mut did_something = false;
+
         while let Ok(event) = self.event_receiver.try_recv() {
+            did_something = true;
+
             match event {
-                WindowEvent::WindowCreated(hwnd_raw) | WindowEvent::WindowShown(hwnd_raw) => {
+                WindowEvent::WindowCreated(hwnd_raw) => {
                     let hwnd = HWND(hwnd_raw as isize);
 
-                    match win_api::get_dock_icon_for_window(hwnd) {
-                        Some(icon) => {
-                            if !self.dock_items.iter().any(|i| i.path == icon.path) {
-                                println!("✅ Adding: {}", icon.path);
-                                self.dock_items.push(icon);
-                            } else {
-                                println!("⏭️ Already exists: {}", icon.path);
-                            }
+                    if let Some(icon) = win_api::get_dock_icon_for_window(hwnd) {
+                        if !self.dock_items.iter().any(|i| i.path == icon.path) {
+                            println!("✅ Adding: {}", icon.path);
+                            self.dock_items.push(icon);
+                        } else {
+                            println!("❌ Already exists: {}", icon.path);
                         }
-                        None => {
-                            println!("⏭️ Not a dockable window");
+                    } else {
+                        println!("❌ No icon found for window: {}", hwnd_raw);
+                    }
+                }
+
+                WindowEvent::WindowDestroyed(hwnd_raw) => {
+                    let _hwnd = HWND(hwnd_raw as isize);
+                    println!("Window Destroyed");
+
+                    if let Some(pos) = self.dock_items.iter().position(|item| item.hwnd == _hwnd) {
+                        let path = self.dock_items[pos].path.clone();
+
+                        let still_running = win_api::update_running_apps()
+                            .iter()
+                            .any(|app| app.path == path);
+
+                        if !still_running {
+                            println!("❌ Removing: {}", path);
+                            let removed = self.dock_items.remove(pos);
+
+                            if !self.dock_items.iter().any(|i| i.path == removed.path) {
+                                self.icon_textures.remove(&removed.path);
+                            }
+                        } else {
+                            if let Some(new_icon) = win_api::update_running_apps()
+                                .into_iter()
+                                .find(|app| app.path == path)
+                            {
+                                self.dock_items[pos].hwnd = new_icon.hwnd;
+                                println!("✅ Updated: {}", path);
+                            }
                         }
                     }
                 }
 
-                WindowEvent::WindowDestroyed(_hwnd_raw) => {
-                    self.needs_refresh = true;
-                }
-
-                WindowEvent::WindowHidden(_hwnd_raw) => {
-                    println!("👁️ Window hidden/Shown");
+                WindowEvent::WindowActivated(hwnd_raw) => {
+                    let _hwnd = HWND(hwnd_raw as isize);
                 }
             }
         }
 
-        if self.needs_refresh {
-            println!("🔄 Refreshing dock...");
-
-            let currently_running = win_api::update_running_apps();
-            let running_paths: std::collections::HashSet<_> =
-                currently_running.iter().map(|i| i.path.clone()).collect();
-
-            self.dock_items.retain(|item| {
-                let keep = running_paths.contains(&item.path);
-                if !keep {
-                    println!("🗑️ Removed: {}", item.path);
-                }
-                keep
-            });
-
-            let current_paths: std::collections::HashSet<_> =
-                self.dock_items.iter().map(|i| i.path.clone()).collect();
-            self.icon_textures
-                .retain(|path, _| current_paths.contains(path));
-
-            self.needs_refresh = false;
-        }
+        did_something
     }
+
     fn draw_dock_ui(&self, ui: &mut egui::Ui) {
         let Config {
             background_color,
@@ -139,7 +143,11 @@ impl FerroDock {
 
 impl App for FerroDock {
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
-        self.process_window_events();
+        ctx.request_repaint();
+
+        if self.process_window_events() {
+            ctx.request_repaint();
+        }
 
         for icon in &self.dock_items {
             if !self.icon_textures.contains_key(&icon.path) {

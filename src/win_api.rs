@@ -13,6 +13,7 @@ use windows::Win32::{
 pub struct DockIcon {
     pub path: String,
     pub hicon: HICON,
+    pub hwnd: HWND,
 }
 
 pub fn is_dock_worthy_window(hwnd: HWND) -> bool {
@@ -111,6 +112,7 @@ pub fn get_dock_icon_for_window(hwnd: HWND) -> Option<DockIcon> {
     Some(DockIcon {
         hicon,
         path: path_str,
+        hwnd,
     })
 }
 
@@ -173,6 +175,7 @@ pub fn update_running_apps() -> Vec<DockIcon> {
                             current_icons.push(DockIcon {
                                 hicon,
                                 path: path_str,
+                                hwnd,
                             })
                         }
                     }

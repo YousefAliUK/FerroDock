@@ -1,58 +1,30 @@
-// TODO: Use RegisterShellHookWindow instead of window events for instant updates
 use std::sync::OnceLock;
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use windows::Win32::{
-    Foundation::HWND,
-    UI::{
-        Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent},
-        WindowsAndMessaging::{
-            DispatchMessageW, GetMessageW, MSG, TranslateMessage, WINEVENT_OUTOFCONTEXT,
-            WINEVENT_SKIPOWNPROCESS,
-        },
+    Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+    UI::WindowsAndMessaging::{
+        CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW,
+        MSG, RegisterClassW, RegisterShellHookWindow, RegisterWindowMessageW, TranslateMessage,
+        WINDOW_EX_STYLE, WINDOW_STYLE, WNDCLASSW,
     },
 };
 
-const EVENT_OBJECT_CREATE: u32 = 0x8000;
-const EVENT_OBJECT_DESTROY: u32 = 0x8001;
-const EVENT_OBJECT_SHOW: u32 = 0x8002;
-const EVENT_OBJECT_HIDE: u32 = 0x8003;
+use windows::core::w;
+
+const HSHELL_WINDOWCREATED: usize = 0x0001;
+const HSHELL_WINDOWDESTROYED: usize = 0x0002;
+const HSHELL_WINDOWACTIVATED: usize = 0x0004;
 
 #[derive(Debug, Clone)]
 pub enum WindowEvent {
     WindowCreated(isize),
     WindowDestroyed(isize),
-    WindowShown(isize),
-    WindowHidden(isize),
+    WindowActivated(isize),
 }
 
 static EVENT_SENDER: OnceLock<Sender<WindowEvent>> = OnceLock::new();
-
-extern "system" fn win_event_callback(
-    _hook: HWINEVENTHOOK,
-    event: u32,
-    hwnd: HWND,
-    id_object: i32,
-    _id_child: i32,
-    _event_thread: u32,
-    _event_time: u32,
-) {
-    if id_object != 0 {
-        return;
-    }
-
-    if let Some(sender) = EVENT_SENDER.get() {
-        let event = match event {
-            EVENT_OBJECT_CREATE => WindowEvent::WindowCreated(hwnd.0 as isize),
-            EVENT_OBJECT_DESTROY => WindowEvent::WindowDestroyed(hwnd.0 as isize),
-            EVENT_OBJECT_SHOW => WindowEvent::WindowShown(hwnd.0 as isize),
-            EVENT_OBJECT_HIDE => WindowEvent::WindowHidden(hwnd.0 as isize),
-            _ => return,
-        };
-
-        let _ = sender.send(event);
-    }
-}
+static SHELL_HOOK_MSG: OnceLock<u32> = OnceLock::new();
 
 pub fn start_event_listener() -> Receiver<WindowEvent> {
     let (sender, receiver) = mpsc::channel();
@@ -61,68 +33,81 @@ pub fn start_event_listener() -> Receiver<WindowEvent> {
         .expect("Failed to set event sender");
 
     std::thread::spawn(|| unsafe {
-        let hook_create = SetWinEventHook(
-            EVENT_OBJECT_CREATE,
-            EVENT_OBJECT_CREATE,
+        let shell_msg = RegisterWindowMessageW(w!("SHELLHOOK"));
+        SHELL_HOOK_MSG.set(shell_msg).ok();
+
+        let class_name = w!("FerroDockShellHook");
+
+        let wc = WNDCLASSW {
+            lpfnWndProc: Some(shell_hook_proc),
+            lpszClassName: class_name,
+            style: CS_HREDRAW | CS_VREDRAW,
+            ..Default::default()
+        };
+
+        RegisterClassW(&wc);
+
+        let hwnd = CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            class_name,
+            w!("FerroDock Shell Hook"),
+            WINDOW_STYLE::default(),
+            0,
+            0,
+            0,
+            0,
             None,
-            Some(win_event_callback),
-            0,
-            0,
-            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+            None,
+            None,
+            None,
         );
 
-        let hook_destroy = SetWinEventHook(
-            EVENT_OBJECT_DESTROY,
-            EVENT_OBJECT_DESTROY,
-            None,
-            Some(win_event_callback),
-            0,
-            0,
-            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
-        );
-
-        let hook_show = SetWinEventHook(
-            EVENT_OBJECT_SHOW,
-            EVENT_OBJECT_SHOW,
-            None,
-            Some(win_event_callback),
-            0,
-            0,
-            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
-        );
-
-        let hook_hide = SetWinEventHook(
-            EVENT_OBJECT_HIDE,
-            EVENT_OBJECT_HIDE,
-            None,
-            Some(win_event_callback),
-            0,
-            0,
-            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
-        );
-
-        if hook_create.is_invalid()
-            || hook_destroy.is_invalid()
-            || hook_show.is_invalid()
-            || hook_hide.is_invalid()
-        {
-            eprintln!("Failed to install one or more window event hooks");
+        if hwnd.0 == 0 {
+            eprintln!("Failed to create shell hook window");
             return;
         }
 
-        println!("Window event listener started");
+        if !RegisterShellHookWindow(hwnd).as_bool() {
+            eprintln!("Failed to register shell hook window");
+            return;
+        }
+
+        println!("Shell hook window created");
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
             let _ = TranslateMessage(&msg);
             let _ = DispatchMessageW(&msg);
         }
-
-        let _ = UnhookWinEvent(hook_create);
-        let _ = UnhookWinEvent(hook_destroy);
-        let _ = UnhookWinEvent(hook_show);
-        let _ = UnhookWinEvent(hook_hide);
     });
 
     receiver
+}
+
+extern "system" fn shell_hook_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    unsafe {
+        let shell_msg = SHELL_HOOK_MSG.get().copied().unwrap_or(0);
+
+        if msg == shell_msg {
+            if let Some(sender) = EVENT_SENDER.get() {
+                let event = match wparam.0 {
+                    HSHELL_WINDOWCREATED => Some(WindowEvent::WindowCreated(lparam.0)),
+                    HSHELL_WINDOWDESTROYED => Some(WindowEvent::WindowDestroyed(lparam.0)),
+                    HSHELL_WINDOWACTIVATED => Some(WindowEvent::WindowActivated(lparam.0)),
+                    _ => return LRESULT(0),
+                };
+
+                if let Some(e) = event {
+                    let _ = sender.send(e);
+                }
+            }
+        }
+
+        DefWindowProcW(hwnd, msg, wparam, lparam)
+    }
 }
