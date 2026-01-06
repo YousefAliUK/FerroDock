@@ -5,9 +5,10 @@ use eframe::{self};
 mod app;
 mod config;
 mod events;
-mod win_api;
+mod windows;
 
 use app::*;
+
 // Main application structure
 fn main() {
     let options = eframe::NativeOptions {
