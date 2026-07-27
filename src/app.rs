@@ -23,6 +23,7 @@ pub struct FerroDock {
     pub dock_items: Vec<DockIcon>,
     pub icon_textures: HashMap<String, TextureHandle>,
     pub pending_sync_frames: u8,
+    pub position_set: bool,
     event_receiver: Receiver<WindowEvent>,
 }
 
@@ -33,6 +34,7 @@ impl Default for FerroDock {
             dock_items: Vec::new(),
             icon_textures: HashMap::new(),
             pending_sync_frames: 0,
+            position_set: false,
             event_receiver: events::start_event_listener(),
         }
     }
@@ -48,6 +50,7 @@ impl FerroDock {
             dock_items: initial_icons,
             icon_textures: HashMap::new(),
             pending_sync_frames: 0,
+            position_set: false,
             event_receiver,
         }
     }
@@ -218,6 +221,39 @@ impl FerroDock {
 
 impl App for FerroDock {
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
+        if !self.position_set {
+            self.position_set = true;
+            let mut work_area = RECT::default();
+            unsafe {
+                let _ = windows::Win32::UI::WindowsAndMessaging::SystemParametersInfoW(
+                    windows::Win32::UI::WindowsAndMessaging::SPI_GETWORKAREA,
+                    0,
+                    Some(&mut work_area as *mut _ as *mut _),
+                    windows::Win32::UI::WindowsAndMessaging::SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+                );
+            }
+            let hdc = unsafe { windows::Win32::Graphics::Gdi::GetDC(None) };
+            let dpi = if hdc.is_invalid() {
+                96.0
+            } else {
+                let d = unsafe { windows::Win32::Graphics::Gdi::GetDeviceCaps(hdc, windows::Win32::Graphics::Gdi::LOGPIXELSX) } as f32;
+                let _ = unsafe { windows::Win32::Graphics::Gdi::ReleaseDC(None, hdc) };
+                d
+            };
+            let scale_factor = (dpi / 96.0).max(1.0);
+            let work_left = (work_area.left as f32) / scale_factor;
+            let work_right = (work_area.right as f32) / scale_factor;
+            let work_bottom = (work_area.bottom as f32) / scale_factor;
+            let work_w = work_right - work_left;
+            let dock_width = (work_w * 0.5).min(750.0);
+            let dock_height = 80.0;
+            let pos_x = work_left + (work_w - dock_width) / 2.0;
+            let pos_y = work_bottom - dock_height - 2.0;
+
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(pos_x, pos_y)));
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(dock_width, dock_height)));
+        }
+
         if self.process_window_events() {
             ctx.request_repaint();
         }
