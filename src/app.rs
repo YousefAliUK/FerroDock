@@ -23,22 +23,40 @@ pub struct FerroDock {
     pub dock_items: Vec<DockIcon>,
     pub icon_textures: HashMap<String, TextureHandle>,
     pub pending_sync_frames: u8,
+    pub position_set: bool,
     event_receiver: Receiver<WindowEvent>,
 }
 
 impl Default for FerroDock {
+    /// Creates a dock with default configuration and empty application and texture collections.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let dock = FerroDock::default();
+    /// assert!(!dock.position_set);
+    /// ```
     fn default() -> Self {
         Self {
             config: Config::default(),
             dock_items: Vec::new(),
             icon_textures: HashMap::new(),
             pending_sync_frames: 0,
+            position_set: false,
             event_receiver: events::start_event_listener(),
         }
     }
 }
 
 impl FerroDock {
+    /// Creates a dock initialized with the currently running applications.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let dock = FerroDock::new();
+    /// assert!(!dock.position_set);
+    /// ```
     pub fn new() -> Self {
         let initial_icons = update_running_apps();
         let event_receiver = events::start_event_listener();
@@ -48,10 +66,25 @@ impl FerroDock {
             dock_items: initial_icons,
             icon_textures: HashMap::new(),
             pending_sync_frames: 0,
+            position_set: false,
             event_receiver,
         }
     }
 
+    /// Processes queued window events and refreshes the dock state when events are available.
+    ///
+    /// Stale icon textures are removed after a refresh.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut dock = FerroDock::new();
+    /// let refreshed = dock.process_window_events();
+    ///
+    /// assert!(!refreshed || dock.pending_sync_frames == 15);
+    /// ```
+    ///
+    /// Returns `true` if at least one queued event was processed, `false` otherwise.
     fn process_window_events(&mut self) -> bool {
         let mut did_something = false;
 
@@ -62,6 +95,12 @@ impl FerroDock {
         if did_something {
             self.pending_sync_frames = 15;
             self.dock_items = update_running_apps();
+
+            // Garbage-collect stale textures for applications no longer in the dock
+            let active_paths: std::collections::HashSet<&String> =
+                self.dock_items.iter().map(|i| &i.path).collect();
+            self.icon_textures
+                .retain(|path, _| active_paths.contains(path));
         }
 
         did_something
@@ -211,7 +250,52 @@ impl FerroDock {
 }
 
 impl App for FerroDock {
+    /// Updates the dock's position, application state, icon textures, and rendered UI.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut dock = FerroDock::default();
+    /// let context = egui::Context::default();
+    /// let mut frame = eframe::Frame::default();
+    ///
+    /// dock.update(&context, &mut frame);
+    /// assert!(dock.position_set);
+    /// ```
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
+        if !self.position_set {
+            self.position_set = true;
+            let mut work_area = RECT::default();
+            unsafe {
+                let _ = windows::Win32::UI::WindowsAndMessaging::SystemParametersInfoW(
+                    windows::Win32::UI::WindowsAndMessaging::SPI_GETWORKAREA,
+                    0,
+                    Some(&mut work_area as *mut _ as *mut _),
+                    windows::Win32::UI::WindowsAndMessaging::SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+                );
+            }
+            let hdc = unsafe { windows::Win32::Graphics::Gdi::GetDC(None) };
+            let dpi = if hdc.is_invalid() {
+                96.0
+            } else {
+                let d = unsafe { windows::Win32::Graphics::Gdi::GetDeviceCaps(hdc, windows::Win32::Graphics::Gdi::LOGPIXELSX) } as f32;
+                let _ = unsafe { windows::Win32::Graphics::Gdi::ReleaseDC(None, hdc) };
+                d
+            };
+            let scale_factor = (dpi / 96.0).max(1.0);
+            let work_left = (work_area.left as f32) / scale_factor;
+            let work_right = (work_area.right as f32) / scale_factor;
+            let work_bottom = (work_area.bottom as f32) / scale_factor;
+            let work_w = work_right - work_left;
+            let dock_width = (work_w * 0.5).min(750.0);
+            let dock_height = 80.0;
+            let pos_x = work_left + (work_w - dock_width) / 2.0;
+            let pos_y = work_bottom - dock_height - 2.0;
+
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(pos_x, pos_y)));
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(dock_width, dock_height)));
+        }
+
         if self.process_window_events() {
             ctx.request_repaint();
         }
@@ -247,7 +331,108 @@ impl App for FerroDock {
             });
     }
 
+    /// Uses a fully transparent color to clear the application viewport.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let color = egui::Color32::TRANSPARENT.to_normalized_gamma_f32();
+    /// assert_eq!(color, [0.0, 0.0, 0.0, 0.0]);
+    /// ```
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         egui::Color32::TRANSPARENT.to_normalized_gamma_f32()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    /// Builds a `FerroDock` directly (bypassing `new`/`default`) so tests can
+    /// supply their own event channel instead of spinning up the real Win32
+    /// shell-hook listener thread.
+    fn make_dock_with_receiver(receiver: Receiver<WindowEvent>) -> FerroDock {
+        FerroDock {
+            config: Config::default(),
+            dock_items: Vec::new(),
+            icon_textures: HashMap::new(),
+            pending_sync_frames: 0,
+            position_set: false,
+            event_receiver: receiver,
+        }
+    }
+
+    #[test]
+    fn default_initializes_position_set_to_false() {
+        let dock = FerroDock::default();
+        assert!(!dock.position_set);
+        assert_eq!(dock.pending_sync_frames, 0);
+        assert!(dock.icon_textures.is_empty());
+    }
+
+    #[test]
+    fn new_initializes_position_set_to_false() {
+        let dock = FerroDock::new();
+        assert!(!dock.position_set);
+    }
+
+    #[test]
+    fn process_window_events_returns_false_and_leaves_state_untouched_when_idle() {
+        let (_sender, receiver) = mpsc::channel();
+        let mut dock = make_dock_with_receiver(receiver);
+        dock.pending_sync_frames = 3;
+        dock.icon_textures
+            .insert("C:\\some\\untouched\\app.exe".to_string(), {
+                let ctx = egui::Context::default();
+                ctx.load_texture(
+                    "untouched",
+                    egui::ColorImage::new([1, 1], egui::Color32::TRANSPARENT),
+                    egui::TextureOptions::default(),
+                )
+            });
+
+        let did_something = dock.process_window_events();
+
+        assert!(!did_something);
+        // No events were received, so nothing should have been mutated,
+        // including the texture cache (no garbage collection should run).
+        assert_eq!(dock.pending_sync_frames, 3);
+        assert_eq!(dock.icon_textures.len(), 1);
+    }
+
+    #[test]
+    fn process_window_events_garbage_collects_stale_textures_on_event() {
+        let (sender, receiver) = mpsc::channel();
+        sender.send(WindowEvent::WindowCreated).unwrap();
+        let mut dock = make_dock_with_receiver(receiver);
+
+        // Seed the texture cache with an entry for a path that cannot
+        // possibly correspond to a currently running window.
+        let stale_path = "C:\\definitely\\not\\a\\real\\running\\app_ferrodock_test.exe".to_string();
+        let ctx = egui::Context::default();
+        let texture = ctx.load_texture(
+            "stale",
+            egui::ColorImage::new([1, 1], egui::Color32::TRANSPARENT),
+            egui::TextureOptions::default(),
+        );
+        dock.icon_textures.insert(stale_path.clone(), texture);
+
+        let did_something = dock.process_window_events();
+
+        assert!(did_something);
+        assert_eq!(dock.pending_sync_frames, 15);
+        assert!(
+            !dock.icon_textures.contains_key(&stale_path),
+            "stale texture entries no longer backed by a dock item must be evicted"
+        );
+
+        // Invariant enforced by the retain() call: every remaining texture
+        // key must correspond to a path currently present in dock_items.
+        let active_paths: std::collections::HashSet<&String> =
+            dock.dock_items.iter().map(|i| &i.path).collect();
+        for path in dock.icon_textures.keys() {
+            assert!(active_paths.contains(path));
+        }
     }
 }
