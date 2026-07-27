@@ -53,6 +53,8 @@ fn main() {
             .with_decorations(false)
             .with_transparent(true)
             .with_always_on_top()
+            .with_resizable(false)
+            .with_maximize_button(false)
             .with_inner_size([dock_width, dock_height])
             .with_position([pos_x, pos_y]),
         ..Default::default()
