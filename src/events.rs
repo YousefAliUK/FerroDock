@@ -19,9 +19,9 @@ const HSHELL_RUDEAPPACTIVATED: usize = 0x8004;
 
 #[derive(Debug, Clone)]
 pub enum WindowEvent {
-    WindowCreated(isize),
-    WindowDestroyed(isize),
-    WindowActivated(isize),
+    WindowCreated,
+    WindowDestroyed,
+    WindowActivated,
 }
 
 static EVENT_SENDER: OnceLock<Sender<WindowEvent>> = OnceLock::new();
@@ -97,10 +97,10 @@ extern "system" fn shell_hook_proc(
         if msg == shell_msg {
             if let Some(sender) = EVENT_SENDER.get() {
                 let event = match wparam.0 {
-                    HSHELL_WINDOWCREATED => Some(WindowEvent::WindowCreated(lparam.0)),
-                    HSHELL_WINDOWDESTROYED => Some(WindowEvent::WindowDestroyed(lparam.0)),
+                    HSHELL_WINDOWCREATED => Some(WindowEvent::WindowCreated),
+                    HSHELL_WINDOWDESTROYED => Some(WindowEvent::WindowDestroyed),
                     HSHELL_WINDOWACTIVATED | HSHELL_RUDEAPPACTIVATED => {
-                        Some(WindowEvent::WindowActivated(lparam.0))
+                        Some(WindowEvent::WindowActivated)
                     }
                     _ => return LRESULT(0),
                 };
