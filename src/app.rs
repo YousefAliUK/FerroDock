@@ -28,6 +28,14 @@ pub struct FerroDock {
 }
 
 impl Default for FerroDock {
+    /// Creates a dock with default configuration and empty application and texture collections.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let dock = FerroDock::default();
+    /// assert!(!dock.position_set);
+    /// ```
     fn default() -> Self {
         Self {
             config: Config::default(),
@@ -41,6 +49,14 @@ impl Default for FerroDock {
 }
 
 impl FerroDock {
+    /// Creates a dock initialized with the currently running applications.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let dock = FerroDock::new();
+    /// assert!(!dock.position_set);
+    /// ```
     pub fn new() -> Self {
         let initial_icons = update_running_apps();
         let event_receiver = events::start_event_listener();
@@ -55,6 +71,20 @@ impl FerroDock {
         }
     }
 
+    /// Processes queued window events and refreshes the dock state when events are available.
+    ///
+    /// Stale icon textures are removed after a refresh.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut dock = FerroDock::new();
+    /// let refreshed = dock.process_window_events();
+    ///
+    /// assert!(!refreshed || dock.pending_sync_frames == 15);
+    /// ```
+    ///
+    /// Returns `true` if at least one queued event was processed, `false` otherwise.
     fn process_window_events(&mut self) -> bool {
         let mut did_something = false;
 
@@ -220,6 +250,18 @@ impl FerroDock {
 }
 
 impl App for FerroDock {
+    /// Updates the dock's position, application state, icon textures, and rendered UI.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut dock = FerroDock::default();
+    /// let context = egui::Context::default();
+    /// let mut frame = eframe::Frame::default();
+    ///
+    /// dock.update(&context, &mut frame);
+    /// assert!(dock.position_set);
+    /// ```
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
         if !self.position_set {
             self.position_set = true;
@@ -289,6 +331,14 @@ impl App for FerroDock {
             });
     }
 
+    /// Uses a fully transparent color to clear the application viewport.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let color = egui::Color32::TRANSPARENT.to_normalized_gamma_f32();
+    /// assert_eq!(color, [0.0, 0.0, 0.0, 0.0]);
+    /// ```
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         egui::Color32::TRANSPARENT.to_normalized_gamma_f32()
     }

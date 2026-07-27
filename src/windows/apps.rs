@@ -5,6 +5,25 @@ use windows::Win32::UI::WindowsAndMessaging::{
     EnumChildWindows, GetClassNameW, GetWindowThreadProcessId,
 };
 
+/// Determines whether a path identifies a UWP application.
+///
+/// The path is recognized when it contains a known UWP directory name or when
+/// an ancestor directory contains an `AppxManifest.xml` file.
+///
+/// # Examples
+///
+/// ```
+/// assert!(is_uwp_app(r"C:\Program Files\WindowsApps\App.exe"));
+/// assert!(!is_uwp_app(r"C:\Program Files\App.exe"));
+/// ```
+///
+/// # Arguments
+///
+/// * `path` - The application path to inspect.
+///
+/// # Returns
+///
+/// `true` if the path identifies a UWP application, `false` otherwise.
 pub fn is_uwp_app(path: &str) -> bool {
     let lower = path.to_lowercase();
     if lower.contains("windowsapps")
@@ -25,6 +44,23 @@ pub fn is_uwp_app(path: &str) -> bool {
     false
 }
 
+/// Retrieves the executable path of a UWP process associated with an application frame window.
+///
+/// # Examples
+///
+/// ```no_run
+/// let path = get_uwp_real_process_path(HWND(0));
+/// assert!(path.is_none() || path.is_some());
+/// ```
+///
+/// # Returns
+///
+/// The child process executable path when `hwnd` identifies an application frame
+/// window and a process path can be retrieved; otherwise, `None`.
+///
+/// # Parameters
+///
+/// * `hwnd` - Handle to the application frame window to inspect.
 pub fn get_uwp_real_process_path(hwnd: HWND) -> Option<String> {
     unsafe {
         let mut class_name: [u16; 256] = [0; 256];

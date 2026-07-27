@@ -14,6 +14,13 @@ mod windows;
 
 use app::*;
 
+/// Starts FerroDock and positions its dock window within the usable desktop area.
+///
+/// # Examples
+///
+/// ```ignore
+/// main();
+/// ```
 fn main() {
     let mut work_area = RECT::default();
     unsafe {
