@@ -62,6 +62,12 @@ impl FerroDock {
         if did_something {
             self.pending_sync_frames = 15;
             self.dock_items = update_running_apps();
+
+            // Garbage-collect stale textures for applications no longer in the dock
+            let active_paths: std::collections::HashSet<&String> =
+                self.dock_items.iter().map(|i| &i.path).collect();
+            self.icon_textures
+                .retain(|path, _| active_paths.contains(path));
         }
 
         did_something

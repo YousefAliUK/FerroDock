@@ -7,12 +7,22 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 pub fn is_uwp_app(path: &str) -> bool {
     let lower = path.to_lowercase();
-    lower.contains("windowsapps")
-        || lower.contains("immersivecontrolpanel")
+    if lower.contains("windowsapps")
         || lower.contains("systemapps")
-        || lower.contains("windowscalculator")
-        || lower.contains("windowsnotepad")
-        || lower.contains("mspaint")
+        || lower.contains("immersivecontrolpanel")
+    {
+        return true;
+    }
+
+    let mut current = std::path::Path::new(path).parent();
+    while let Some(dir) = current {
+        if dir.join("AppxManifest.xml").exists() {
+            return true;
+        }
+        current = dir.parent();
+    }
+
+    false
 }
 
 pub fn get_uwp_real_process_path(hwnd: HWND) -> Option<String> {
