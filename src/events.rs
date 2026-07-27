@@ -29,9 +29,7 @@ static SHELL_HOOK_MSG: OnceLock<u32> = OnceLock::new();
 
 pub fn start_event_listener() -> Receiver<WindowEvent> {
     let (sender, receiver) = mpsc::channel();
-    EVENT_SENDER
-        .set(sender)
-        .expect("Failed to set event sender");
+    let _ = EVENT_SENDER.set(sender);
 
     std::thread::spawn(|| unsafe {
         let shell_msg = RegisterWindowMessageW(w!("SHELLHOOK"));
