@@ -66,3 +66,59 @@ fn main() {
         Box::new(|_cc| Box::new(FerroDock::new())),
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use eframe::egui;
+
+    #[test]
+    fn viewport_builder_disables_resizing_and_maximize_button() {
+        // Mirrors the exact chain of builder calls used in `main` to ensure
+        // the newly added `.with_resizable(false)` / `.with_maximize_button(false)`
+        // options actually take effect on the resulting `ViewportBuilder`.
+        let viewport = egui::ViewportBuilder::default()
+            .with_decorations(false)
+            .with_transparent(true)
+            .with_always_on_top()
+            .with_resizable(false)
+            .with_maximize_button(false)
+            .with_inner_size([400.0, 80.0])
+            .with_position([0.0, 0.0]);
+
+        assert_eq!(viewport.resizable, Some(false));
+        assert_eq!(viewport.maximize_button, Some(false));
+    }
+
+    #[test]
+    fn viewport_builder_default_leaves_resizable_and_maximize_unset() {
+        // Contrast case: without the new builder calls, egui's own defaults
+        // leave these fields unset.
+        let viewport = egui::ViewportBuilder::default();
+        assert_eq!(viewport.resizable, None);
+        assert_eq!(viewport.maximize_button, None);
+    }
+
+    #[test]
+    fn cargo_toml_declares_appx_packaging_feature() {
+        let manifest = include_str!("../Cargo.toml");
+        assert!(
+            manifest.contains("Win32_Storage_Packaging_Appx"),
+            "Cargo.toml must enable the Win32_Storage_Packaging_Appx feature for the windows crate"
+        );
+    }
+
+    #[test]
+    fn cargo_toml_still_declares_preexisting_required_features() {
+        let manifest = include_str!("../Cargo.toml");
+        for feature in [
+            "Win32_Foundation",
+            "Win32_UI_WindowsAndMessaging",
+            "Win32_Storage_FileSystem",
+        ] {
+            assert!(
+                manifest.contains(feature),
+                "expected Cargo.toml to still declare feature `{feature}`"
+            );
+        }
+    }
+}
