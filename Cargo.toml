@@ -18,6 +18,8 @@ features = [
     "Win32_System_ProcessStatus",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
+    "Win32_Storage_FileSystem",
     "System",
     "System_Diagnostics",
     "Foundation",

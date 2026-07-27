@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use windows::core::PCWSTR;
 use windows::Win32::{
     Foundation::{CloseHandle, HMODULE, HWND, LPARAM, WPARAM},
     Graphics::Gdi::{
@@ -10,13 +11,14 @@ use windows::Win32::{
         ProcessStatus::GetModuleFileNameExW,
         Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ},
     },
+    UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON},
     UI::WindowsAndMessaging::{
-        CopyIcon, DestroyIcon, GCLP_HICON, GetClassLongPtrW, GetIconInfo, GetWindowThreadProcessId,
-        HICON, ICON_BIG, ICONINFO, SendMessageW, WM_GETICON,
+        CopyIcon, DestroyIcon, GCLP_HICON, GetClassLongPtrW, GetIconInfo,
+        GetWindowThreadProcessId, HICON, ICON_BIG, ICONINFO, SendMessageW, WM_GETICON,
     },
 };
 
-use crate::windows::{is_dock_worthy_window, is_uwp_app};
+use crate::windows::is_dock_worthy_window;
 
 #[derive(Clone, PartialEq)]
 pub struct DockIcon {
@@ -26,11 +28,14 @@ pub struct DockIcon {
 }
 
 pub fn hicon_to_color_image(hicon: HICON) -> Option<eframe::egui::ColorImage> {
+    if hicon.is_invalid() {
+        return None;
+    }
+
     let hicon_clone = match unsafe { CopyIcon(hicon) } {
         Ok(icon) => icon,
         Err(_) => return None,
     };
-    let _ = hicon_clone;
 
     let mut icon_info = ICONINFO::default();
     if unsafe { GetIconInfo(hicon_clone, &mut icon_info).is_err() } {
@@ -115,20 +120,29 @@ pub fn hicon_to_color_image(hicon: HICON) -> Option<eframe::egui::ColorImage> {
 }
 
 pub fn get_uwp_icon(exe_path: &str) -> Option<eframe::egui::ColorImage> {
-    let path = Path::new(exe_path);
-    let package_dir = path.parent()?;
+    let mut current_dir = Path::new(exe_path).parent();
 
-    let manifest_path = package_dir.join("AppxManifest.xml");
-    let manifest_content = std::fs::read_to_string(&manifest_path).ok()?;
+    while let Some(dir) = current_dir {
+        let manifest_path = dir.join("AppxManifest.xml");
+        if manifest_path.exists() {
+            if let Ok(manifest_content) = std::fs::read_to_string(&manifest_path) {
+                if let Some(icon_relative) = parse_logo_from_manifest(&manifest_content) {
+                    if let Some(icon_path) = find_best_icon(dir, &icon_relative) {
+                        if let Some(img) = load_png_as_color_image(&icon_path) {
+                            return Some(img);
+                        }
+                    }
+                }
+            }
+        }
+        current_dir = dir.parent();
+    }
 
-    let icon_relative = parse_logo_from_manifest(&manifest_content)?;
-    let icon_path = find_best_icon(package_dir, &icon_relative)?;
-
-    load_png_as_color_image(&icon_path)
+    None
 }
 
 fn parse_logo_from_manifest(xml: &str) -> Option<String> {
-    for attr in ["Square44x44Logo", "Square150x150Logo", "Logo"] {
+    for attr in ["Square150x150Logo", "Square44x44Logo", "Logo"] {
         if let Some(start) = xml.find(&format!("{}=\"", attr)) {
             let start = start + attr.len() + 2;
             if let Some(end) = xml[start..].find('"') {
@@ -150,7 +164,7 @@ fn find_best_icon(package_dir: &Path, relative_path: &str) -> Option<std::path::
     let stem = base_path.file_stem()?.to_str()?;
     let parent = base_path.parent()?;
 
-    for scale in ["200", "150", "125", "100"] {
+    for scale in ["400", "300", "200", "150", "125", "100"] {
         let scaled_name = format!("{}.scale-{}.png", stem, scale);
         let scaled_path = parent.join(&scaled_name);
 
@@ -159,7 +173,7 @@ fn find_best_icon(package_dir: &Path, relative_path: &str) -> Option<std::path::
         }
     }
 
-    for size in ["48", "44", "32", "24"] {
+    for size in ["256", "128", "64", "48", "44", "32"] {
         let sized_name = format!("{}.targetsize-{}.png", stem, size);
         let sized_path = parent.join(&sized_name);
 
@@ -173,8 +187,13 @@ fn find_best_icon(package_dir: &Path, relative_path: &str) -> Option<std::path::
 
 fn load_png_as_color_image(path: &std::path::PathBuf) -> Option<eframe::egui::ColorImage> {
     let img = image::open(path).ok()?.to_rgba8();
+    let (w, h) = (img.width(), img.height());
 
-    let resized = image::imageops::resize(&img, 32, 32, image::imageops::FilterType::Lanczos3);
+    let resized = if w > 128 || h > 128 {
+        image::imageops::resize(&img, 128, 128, image::imageops::FilterType::Lanczos3)
+    } else {
+        img
+    };
 
     let size = [resized.width() as usize, resized.height() as usize];
     let pixels: Vec<eframe::egui::Color32> = resized
@@ -194,40 +213,46 @@ fn destroy_icon_data(hbm_color: HBITMAP, hbm_mask: HBITMAP, hicon: HICON) {
 }
 
 pub fn get_dock_icon_for_window(hwnd: HWND) -> Option<DockIcon> {
-    // let _is_afh = is_application_frame_host(hwnd);
-
-    let mut process_id: u32 = 0;
-    unsafe {
-        let _ = GetWindowThreadProcessId(hwnd, Some(&mut process_id));
-    }
-
-    if process_id == 0 {
+    if !is_dock_worthy_window(hwnd) {
         return None;
     }
 
-    let process_handle = unsafe {
-        OpenProcess(
-            PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
-            false,
-            process_id,
-        )
+    let uwp_real_path = crate::windows::get_uwp_real_process_path(hwnd);
+
+    let path_str = if let Some(real_path) = uwp_real_path {
+        real_path
+    } else {
+        let mut process_id: u32 = 0;
+        unsafe {
+            let _ = GetWindowThreadProcessId(hwnd, Some(&mut process_id));
+        }
+
+        if process_id == 0 {
+            return None;
+        }
+
+        let process_handle = unsafe {
+            OpenProcess(
+                PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
+                false,
+                process_id,
+            )
+        };
+
+        let Ok(handle) = process_handle else {
+            return None;
+        };
+
+        let mut path_buf: [u16; 260] = [0; 260];
+        let len = unsafe { GetModuleFileNameExW(handle, HMODULE(0), &mut path_buf) };
+        let _ = unsafe { CloseHandle(handle) };
+
+        if len == 0 {
+            return None;
+        }
+
+        String::from_utf16_lossy(&path_buf[..len as usize])
     };
-
-    let Ok(handle) = process_handle else {
-        println!("❌ Couldn't open process {}", process_id);
-        return None;
-    };
-
-    let mut path_buf: [u16; 260] = [0; 260];
-    let len = unsafe { GetModuleFileNameExW(handle, HMODULE(0), &mut path_buf) };
-
-    let _ = unsafe { CloseHandle(handle) };
-
-    if len == 0 {
-        return None;
-    }
-
-    let path_str = String::from_utf16_lossy(&path_buf[..len as usize]);
 
     // Skip our own window
     if let Ok(own_path) = std::env::current_exe() {
@@ -249,27 +274,46 @@ pub fn get_dock_icon_for_window(hwnd: HWND) -> Option<DockIcon> {
         return None;
     }
 
-    if !is_uwp_app(&path_str) && !is_dock_worthy_window(hwnd) {
+    if !is_dock_worthy_window(hwnd) {
         return None;
     }
 
     let hicon = unsafe {
         let result = SendMessageW(hwnd, WM_GETICON, WPARAM(ICON_BIG as usize), LPARAM(0));
 
-        if result.0 == 0 {
-            HICON(GetClassLongPtrW(hwnd, GCLP_HICON) as isize)
-        } else {
+        if result.0 != 0 {
             HICON(result.0)
+        } else {
+            let class_icon = GetClassLongPtrW(hwnd, GCLP_HICON);
+            if class_icon != 0 {
+                HICON(class_icon as isize)
+            } else {
+                let utf16_path: Vec<u16> = path_str.encode_utf16().chain(std::iter::once(0)).collect();
+                let mut shfi = SHFILEINFOW::default();
+                let res = SHGetFileInfoW(
+                    PCWSTR(utf16_path.as_ptr()),
+                    windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(0),
+                    Some(&mut shfi as *mut _ as *mut _),
+                    std::mem::size_of::<SHFILEINFOW>() as u32,
+                    SHGFI_ICON | SHGFI_LARGEICON,
+                );
+
+                if res != 0 && !shfi.hIcon.is_invalid() {
+                    shfi.hIcon
+                } else {
+                    HICON(0)
+                }
+            }
         }
     };
 
-    if hicon.is_invalid() {
+    if hicon.is_invalid() && !crate::windows::is_uwp_app(&path_str) {
         return None;
     }
 
     Some(DockIcon {
         hicon,
         path: path_str,
-        hwnd: hwnd,
+        hwnd,
     })
 }

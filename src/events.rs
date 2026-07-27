@@ -15,6 +15,7 @@ use windows::core::w;
 const HSHELL_WINDOWCREATED: usize = 0x0001;
 const HSHELL_WINDOWDESTROYED: usize = 0x0002;
 const HSHELL_WINDOWACTIVATED: usize = 0x0004;
+const HSHELL_RUDEAPPACTIVATED: usize = 0x8004;
 
 #[derive(Debug, Clone)]
 pub enum WindowEvent {
@@ -98,7 +99,9 @@ extern "system" fn shell_hook_proc(
                 let event = match wparam.0 {
                     HSHELL_WINDOWCREATED => Some(WindowEvent::WindowCreated(lparam.0)),
                     HSHELL_WINDOWDESTROYED => Some(WindowEvent::WindowDestroyed(lparam.0)),
-                    HSHELL_WINDOWACTIVATED => Some(WindowEvent::WindowActivated(lparam.0)),
+                    HSHELL_WINDOWACTIVATED | HSHELL_RUDEAPPACTIVATED => {
+                        Some(WindowEvent::WindowActivated(lparam.0))
+                    }
                     _ => return LRESULT(0),
                 };
 

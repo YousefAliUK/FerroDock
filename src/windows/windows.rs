@@ -1,10 +1,14 @@
 use windows::Win32::Foundation::{BOOL, CloseHandle, HMODULE, HWND, LPARAM};
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::System::ProcessStatus::GetModuleFileNameExW;
-use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ};
+use windows::Win32::System::Threading::{
+    AttachThreadInput, GetCurrentThreadId, OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GW_OWNER, GWL_EXSTYLE, GetClassNameW, GetWindow, GetWindowLongPtrW,
-    GetWindowTextLengthW, GetWindowThreadProcessId, IsWindowVisible, WS_EX_TOOLWINDOW,
+    BringWindowToTop, EnumWindows, GW_OWNER, GWL_EXSTYLE, GetClassNameW, GetForegroundWindow,
+    GetWindow, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+    IsIconic, IsWindow, IsWindowVisible, SetForegroundWindow, ShowWindow, SW_MINIMIZE, SW_RESTORE,
+    SW_SHOW, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
 };
 
 use crate::windows::DockIcon;
@@ -37,16 +41,16 @@ pub fn is_dock_worthy_window(hwnd: HWND) -> bool {
             return false;
         }
 
-        if GetWindowTextLengthW(hwnd) == 0 {
+        let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+        let is_tool_window = (ex_style & WS_EX_TOOLWINDOW.0) != 0;
+        let is_app_window = (ex_style & WS_EX_APPWINDOW.0) != 0;
+        let has_owner = GetWindow(hwnd, GW_OWNER).0 != 0;
+
+        if is_tool_window {
             return false;
         }
 
-        if GetWindow(hwnd, GW_OWNER).0 != 0 {
-            return false;
-        }
-
-        let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
-        if (style & WS_EX_TOOLWINDOW.0) != 0 {
+        if has_owner && !is_app_window {
             return false;
         }
 
@@ -67,28 +71,67 @@ pub fn is_dock_worthy_window(hwnd: HWND) -> bool {
     }
 }
 
-extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+pub fn focus_or_minimize_window(hwnd: HWND) {
+    if hwnd.0 == 0 {
+        return;
+    }
     unsafe {
-        if !IsWindowVisible(hwnd).as_bool() {
-            return true.into();
-        };
-
-        if GetWindowTextLengthW(hwnd) == 0 {
-            return true.into();
+        if !IsWindow(hwnd).as_bool() {
+            return;
         }
 
-        if GetWindow(hwnd, GW_OWNER).0 != 0 {
-            return true.into();
+        let foreground = GetForegroundWindow();
+        if foreground == hwnd {
+            let _ = ShowWindow(hwnd, SW_MINIMIZE);
+        } else {
+            let mut foreground_pid = 0;
+            let foreground_thread_id = GetWindowThreadProcessId(foreground, Some(&mut foreground_pid));
+            let current_thread_id = GetCurrentThreadId();
+
+            if foreground_thread_id != 0 && foreground_thread_id != current_thread_id {
+                let _ = AttachThreadInput(current_thread_id, foreground_thread_id, true);
+                if IsIconic(hwnd).as_bool() {
+                    let _ = ShowWindow(hwnd, SW_RESTORE);
+                } else {
+                    let _ = ShowWindow(hwnd, SW_SHOW);
+                }
+                let _ = SetForegroundWindow(hwnd);
+                let _ = BringWindowToTop(hwnd);
+                let _ = AttachThreadInput(current_thread_id, foreground_thread_id, false);
+            } else {
+                if IsIconic(hwnd).as_bool() {
+                    let _ = ShowWindow(hwnd, SW_RESTORE);
+                } else {
+                    let _ = ShowWindow(hwnd, SW_SHOW);
+                }
+                let _ = SetForegroundWindow(hwnd);
+                let _ = BringWindowToTop(hwnd);
+            }
         }
+    }
+}
 
-        let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
-
-        if (style & WS_EX_TOOLWINDOW.0) != 0 {
-            return true.into();
+pub fn get_window_title(hwnd: HWND) -> String {
+    if hwnd.0 == 0 {
+        return String::new();
+    }
+    unsafe {
+        let mut buf: [u16; 512] = [0; 512];
+        let len = GetWindowTextW(hwnd, &mut buf);
+        if len > 0 {
+            String::from_utf16_lossy(&buf[..len as usize])
+        } else {
+            String::new()
         }
+    }
+}
 
-        let windows: &mut Vec<HWND> = &mut *(lparam.0 as *mut _);
-        windows.push(hwnd);
+extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    if is_dock_worthy_window(hwnd) {
+        unsafe {
+            let windows: &mut Vec<HWND> = &mut *(lparam.0 as *mut _);
+            windows.push(hwnd);
+        }
     }
 
     true.into()
